@@ -39,7 +39,6 @@ from biped.assets.config.simple_biped_config import BIPED_CONFIG
 # Scene definition
 ##
 
-
 @configclass
 class BipedSceneCfg(InteractiveSceneCfg):
     """Configuration for a cart-pole scene."""
@@ -98,7 +97,6 @@ class BipedSceneCfg(InteractiveSceneCfg):
 # mdp components
 ##
 
-
 @configclass
 class CommandCfg:
     """Command terms for the MDP"""
@@ -134,7 +132,6 @@ class CommandCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    # joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=100.0)
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[
@@ -147,6 +144,7 @@ class ActionsCfg:
         ],
         scale=0.25,
         use_default_offset=True,
+        preserve_order= True
     )
 
 

@@ -77,3 +77,6 @@ TODO.md
 
 # sim2sim_mujoco
 sim2sim_mujoco/log_plots/
+
+#agents
+/AGENTS.md

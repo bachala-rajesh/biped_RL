@@ -1,6 +1,5 @@
 import numpy as np
 from collections import deque
-import torch
 import mujoco
 from scipy.spatial.transform import Rotation as R
 from typing import List
@@ -67,4 +66,3 @@ def get_mujoco_data(
         joints_pos.flatten(),
         joints_vel.flatten(),
     )
-
