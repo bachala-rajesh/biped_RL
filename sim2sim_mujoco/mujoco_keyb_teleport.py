@@ -13,8 +13,10 @@ from keyboard_cmd import cmd, start_keyboard_listener
 from sim_config import Sim2simCfg
 
 relative_policy_path = (
-    "logs/rsl_rl/bipedal_locomotion/2026-02-12_08-33-37_flat/exported/policy.pt"
+    "logs/rsl_rl/bipedal_locomotion/2026-05-04_13-44-30_flat/exported/policy.pt"
 )
+
+
 
 
 # --- Data collection lists for plotting (CONTROL ONLY) ---

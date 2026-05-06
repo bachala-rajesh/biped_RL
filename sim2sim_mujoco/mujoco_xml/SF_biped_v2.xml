@@ -1,5 +1,6 @@
 <mujoco model="SF_bipedal">
-  <option iterations="100" integrator="implicitfast" timestep="0.002" solver="PGS" gravity="0 0 -9.81" />
+  <option iterations="50" timestep="0.005" solver="PGS" gravity="0 0 -9.81" />
+   <!-- <option iterations="50" timestep="0.005" solver="PGS" integrator="implicitfast" gravity="0 0 -9.81"/>  -->
 
   <compiler angle="radian" meshdir="meshes" eulerseq="zyx" autolimits="true" />
 

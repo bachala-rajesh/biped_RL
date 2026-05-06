@@ -175,10 +175,38 @@ class ObservationsCfg:
         # robot joint measurements
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=[
+                        "left_hip_pitch_joint",
+                        "left_hip_roll_joint",
+                        "left_knee_joint",
+                        "right_hip_pitch_joint",
+                        "right_hip_roll_joint",
+                        "right_knee_joint",
+                    ],
+                    preserve_order=True,
+                )
+            },
             noise=UniformNoise(operation="add", n_min=-0.01, n_max=0.01),
         )
         joint_vel = ObsTerm(
             func=mdp.joint_vel,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=[
+                        "left_hip_pitch_joint",
+                        "left_hip_roll_joint",
+                        "left_knee_joint",
+                        "right_hip_pitch_joint",
+                        "right_hip_roll_joint",
+                        "right_knee_joint",
+                    ],
+                    preserve_order=True,
+                )
+            },
             noise=UniformNoise(operation="add", n_min=-0.05, n_max=0.05),
         )
 
@@ -213,8 +241,40 @@ class ObservationsCfg:
             func=mdp.generated_commands, params={"command_name": "base_velocity"}
         )
 
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel = ObsTerm(func=mdp.joint_vel)
+        joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=[
+                        "left_hip_pitch_joint",
+                        "left_hip_roll_joint",
+                        "left_knee_joint",
+                        "right_hip_pitch_joint",
+                        "right_hip_roll_joint",
+                        "right_knee_joint",
+                    ],
+                    preserve_order=True,
+                )
+            },
+        )
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=[
+                        "left_hip_pitch_joint",
+                        "left_hip_roll_joint",
+                        "left_knee_joint",
+                        "right_hip_pitch_joint",
+                        "right_hip_roll_joint",
+                        "right_knee_joint",
+                    ],
+                    preserve_order=True,
+                )
+            },
+        )
 
         last_action = ObsTerm(func=mdp.last_action)
 

@@ -13,44 +13,12 @@ from utils import HistoryBuffer, get_mujoco_data
 cmd_vel = np.array([0.0, 0.0, 0.0])
 
 relative_policy_path = (
-    "logs/rsl_rl/bipedal_locomotion/2026-02-12_08-33-37_flat/exported/policy.pt"
+    "logs/rsl_rl/bipedal_locomotion/2026-05-06_17-04-42/exported/policy.pt"
 )
 
 
-class Sim2simCfg:
-    class sim_config:
-        sim_dt = 1 / 200
-        decimation = 4
 
-    class robot_config:
-        # observation
-        obs_history_len = 5
-        num_obs_terms = 8
-        lin_vel_scale = 1.0
-        ang_vel_scale = 1.0
-        dof_pos_scale = 1.0
-        dof_vel_scale = 1.0
-
-        # joints
-        joint_names = {
-            "left_hip_pitch_joint": 0.3,
-            "right_hip_pitch_joint": -0.3,
-            "left_hip_roll_joint": 0.0,
-            "right_hip_roll_joint": 0.0,
-            "left_knee_joint": 0.6,
-            "right_knee_joint": -0.6,
-        }
-        initial_height = 0.53
-        action_scale = 0.25
-
-        # gait
-        gait_freq = 1.75  # [Hz]
-        gait_phase = 0.5  # [0-1]
-        gait_duration = 0.5  # [0-1]
-
-        # mujoco model gains
-        stiffness_gain = 40.0
-        damping_gain = -2.5
+from sim_config import Sim2simCfg
 
 
 def get_observation(
@@ -116,8 +84,24 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
     data = mujoco.MjData(model)
 
     # set gains
-    model.actuator_gainprm[:, 0] = Sim2simCfg.robot_config.stiffness_gain  # Stiffness
-    model.actuator_biasprm[:, 2] = Sim2simCfg.robot_config.damping_gain  # Damping
+    model.actuator_gainprm[:, 0] = Sim2simCfg.robot_config.kp  
+    model.actuator_biasprm[:, 1] = -Sim2simCfg.robot_config.kp  
+    model.actuator_biasprm[:, 2] = -Sim2simCfg.robot_config.kd
+
+    # control rate — derive physics decimation from policy_dt and XML timestep,
+    # then assert the XML divides cleanly. This is the only place where the 50 Hz
+    # invariant is enforced.
+    policy_dt = Sim2simCfg.sim_config.policy_dt
+    physics_dt = model.opt.timestep
+    decimation = round(policy_dt / physics_dt)
+    assert abs(decimation * physics_dt - policy_dt) < 1e-9, (
+        f"XML timestep {physics_dt} does not divide policy_dt {policy_dt}. "
+        f"Set <option timestep=...> so that policy_dt/timestep is an integer."
+    )
+    print(
+        f"Control: policy={1/policy_dt:.1f} Hz, "
+        f"physics={1/physics_dt:.1f} Hz, decimation={decimation}"
+    )
 
     # init history buffer
     history_buffer = HistoryBuffer(
@@ -126,13 +110,11 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
     )
 
     # loop variables
-    step_counter = 0
     last_actions = np.zeros(6, dtype=np.float32)
     gait_time_accumulator = 0.0
 
-    #  time related variables
+    # time related variables
     start_time = time.time()
-    real_start_time = time.time()
     warmup_delay = 0.10  # Wait few seconds before turning on Policy
 
     # initial joint positions
@@ -184,69 +166,75 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
         viewer.cam.azimuth = 135  # Rotate camera (0 = Behind, 90 = Right Side).
         viewer.cam.elevation = -20  # Look slightly down
 
+        # cache actuator ids once
+        actuator_ids = [
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            for name in Sim2simCfg.robot_config.joint_names.keys()
+        ]
+
+        # measured-frequency tracking (printed every ~2 s)
+        fps_window_start = time.time()
+        fps_window_count = 0
+        fps_print_interval = 2.0
+
+        # outer loop = one policy step (50 Hz). inner loop = physics decimation.
         while viewer.is_running():
-            # Check if we are still in Warmup
-            is_warmup = (time.time() - start_time) < warmup_delay
+            loop_start = time.time()
+            is_warmup = (loop_start - start_time) < warmup_delay
 
-            # decimation loop
-            if step_counter % Sim2simCfg.sim_config.decimation == 0:
-                # update gait clock
-                gait_time_accumulator += (
-                    Sim2simCfg.sim_config.sim_dt * Sim2simCfg.sim_config.decimation
-                )
+            # advance gait clock by exactly one policy period
+            gait_time_accumulator += policy_dt
 
-                # get observation
-                current_obs_list, fall_status = get_observation(
-                    model,
-                    data,
-                    last_actions,
-                    gait_time_accumulator,
-                    cmd_vel,
-                    initial_joint_pos,
-                    obs_gait_command,
-                )
+            # observation + history update
+            current_obs_list, fall_status = get_observation(
+                model,
+                data,
+                last_actions,
+                gait_time_accumulator,
+                cmd_vel,
+                initial_joint_pos,
+                obs_gait_command,
+            )
+            history_buffer.update_history(current_obs_list)
+            stacked_obs = history_buffer.get_stacked_obs()
 
-                # update history buffer
-                history_buffer.update_history(current_obs_list)
-                stacked_obs = history_buffer.get_stacked_obs()
+            # inference (zeroed during warmup)
+            if is_warmup:
+                actions = np.zeros(6, dtype=np.float32)
+            else:
+                obs_tensor = torch.from_numpy(stacked_obs).unsqueeze(0).float()
+                with torch.no_grad():
+                    actions = policy(obs_tensor).detach().cpu().numpy().flatten()
+            actions = np.clip(actions, -100.0, 100.0)
+            last_actions = actions
 
-                # wait for warmup and then perform inference
-                if is_warmup:
-                    actions = np.zeros(6, dtype=np.float32)
-                else:
-                    obs_tensor = torch.from_numpy(stacked_obs).unsqueeze(0).float()
-                    with torch.no_grad():
-                        actions = policy(obs_tensor)
-                        actions = actions.detach().cpu().numpy().flatten()
+            # write target joint positions (PD tracks every physics step)
+            targets = actions * Sim2simCfg.robot_config.action_scale + initial_joint_pos
+            for actuator_id, t in zip(actuator_ids, targets):
+                data.ctrl[actuator_id] = t
 
-                # update last actions
-                actions = np.clip(actions, -100.0, 100.0)
-                last_actions = actions
+            # advance physics for one policy interval
+            for _ in range(decimation):
+                mujoco.mj_step(model, data)
 
-            # check if the robot has fallen
-            if fall_status:
-                print("Robot has fallen down...Exiting")
-                break
-
-            # ---- physics step ----
-            targets = (
-                last_actions * Sim2simCfg.robot_config.action_scale
-            ) + initial_joint_pos
-            data.ctrl[:] = targets
-
-            # step simulation
-            mujoco.mj_step(model, data)
-
-            # update viewer
             viewer.sync()
 
-            # update step counter
-            step_counter += 1
+            # throttle outer loop to policy_dt wall-clock
+            sleep = policy_dt - (time.time() - loop_start)
+            if sleep > 0:
+                time.sleep(sleep)
 
-            time_until_next_step = model.opt.timestep - (time.time() - real_start_time)
-            if time_until_next_step > 0:
-                time.sleep(time_until_next_step)
-            real_start_time = time.time()
+            # report measured policy frequency
+            fps_window_count += 1
+            elapsed = time.time() - fps_window_start
+            if elapsed >= fps_print_interval:
+                measured_hz = fps_window_count / elapsed
+                print(
+                    f"[policy] measured={measured_hz:.2f} Hz "
+                    f"target={1/policy_dt:.2f} Hz"
+                )
+                fps_window_start = time.time()
+                fps_window_count = 0
 
 
 def main():
@@ -257,7 +245,7 @@ def main():
     project_root = os.path.dirname(script_dir)
 
     rl_model_path = os.path.join(project_root, relative_policy_path)
-    robot_model_path = os.path.join(script_dir, "mujoco_xml", "SF_biped.xml")
+    robot_model_path = os.path.join(script_dir, "mujoco_xml", "SF_biped_v2.xml")
 
     # run simulation
     run_mujoco(rl_model_path, robot_model_path, cmd_vel)

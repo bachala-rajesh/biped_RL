@@ -16,8 +16,8 @@ from isaaclab_rl.rsl_rl import (
 class PointFootPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     runner_type = "OnPolicyRunner"
     num_steps_per_env = 24
-    max_iterations = 5001
-    save_interval = 1000
+    max_iterations = 3001
+    save_interval = 500
     init_noise_std = 0.7
     experiment_name = "bipedal_locomotion"
     empirical_normalization = True

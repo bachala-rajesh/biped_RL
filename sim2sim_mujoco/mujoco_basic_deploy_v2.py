@@ -1,11 +1,11 @@
-"""Script for sim2sim deployment of a trained RL policy in Mujoco environment (ONNX Runtime)"""
+"""Script for sim2sim deployment of a trained RLpolicy in Mujoco environment"""
 
 import numpy as np
 import mujoco
 import mujoco.viewer
 import time
 import os
-import onnxruntime as ort
+import torch
 from utils import HistoryBuffer, get_mujoco_data
 
 
@@ -13,14 +13,12 @@ from utils import HistoryBuffer, get_mujoco_data
 cmd_vel = np.array([0.0, 0.0, 0.0])
 
 relative_policy_path = (
-    "logs/rsl_rl/bipedal_locomotion/2026-05-04_13-44-30_flat/exported/policy.onnx"
+    "logs/rsl_rl/bipedal_locomotion/2026-05-04_13-44-30_flat/exported/policy.pt"
 )
 
+
+
 from sim_config import Sim2simCfg
-
-
-
-
 
 
 def get_observation(
@@ -40,7 +38,7 @@ def get_observation(
         dtype=np.float32,
     )
 
-    # apply scaling to observations
+    # apply scaling to observations  
     obs_ang_vel = ang_vel * Sim2simCfg.robot_config.ang_vel_scale
     relative_joint_pos = joints_pos - initial_joint_pos
     obs_joint_pos = relative_joint_pos * Sim2simCfg.robot_config.dof_pos_scale
@@ -57,14 +55,14 @@ def get_observation(
 
     # form the observation vector as a list of numpy arrays
     current_obs = [
-        obs_ang_vel.reshape(-1),
-        obs_proj_gravity.reshape(-1),
-        obs_cmd.reshape(-1),
-        obs_joint_pos.reshape(-1),
-        obs_joint_vel.reshape(-1),
-        obs_last_actions.reshape(-1),
-        obs_gait_phase_sin_cos.reshape(-1),
-        obs_gait_command.reshape(-1),
+        obs_ang_vel.reshape(-1),  # [:,3]
+        obs_proj_gravity.reshape(-1),  # [:,3]
+        obs_cmd.reshape(-1),  # [:,3]
+        obs_joint_pos.reshape(-1),  # [:,6]
+        obs_joint_vel.reshape(-1),  # [:,6]
+        obs_last_actions.reshape(-1),  # [:,6]
+        obs_gait_phase_sin_cos.reshape(-1),  # [:,2]
+        obs_gait_command.reshape(-1),  # [:,3]
     ]
 
     fall_status = False
@@ -74,32 +72,11 @@ def get_observation(
     return current_obs, fall_status
 
 
-def load_policy(rl_model_path):
-    """Load ONNX policy and return session + input/output names."""
-    print(f"Loading ONNX Policy: {rl_model_path}")
-
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-    session = ort.InferenceSession(
-        rl_model_path,
-        sess_options=sess_options,
-        providers=Sim2simCfg.runtime_config.providers,
-    )
-
-    print(f"Active providers: {session.get_providers()}")
-
-    input_name = session.get_inputs()[0].name
-    output_name = session.get_outputs()[0].name
-    input_shape = session.get_inputs()[0].shape
-    print(f"Input: {input_name} {input_shape} | Output: {output_name}")
-
-    return session, input_name, output_name
-
-
 def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
     # load policy
-    session, input_name, output_name = load_policy(rl_model_path)
+    print(f"Loading Policy: {rl_model_path}")
+    policy = torch.jit.load(rl_model_path)
+    policy.eval()
 
     # load model
     print(f"Loading Model: {robot_model_path}")
@@ -107,8 +84,8 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
     data = mujoco.MjData(model)
 
     # set gains
-    model.actuator_gainprm[:, 0] = Sim2simCfg.robot_config.stiffness_gain
-    model.actuator_biasprm[:, 2] = Sim2simCfg.robot_config.damping_gain
+    model.actuator_gainprm[:, 0] = Sim2simCfg.robot_config.stiffness_gain  # Stiffness
+    model.actuator_biasprm[:, 2] = Sim2simCfg.robot_config.damping_gain  # Damping
 
     # init history buffer
     history_buffer = HistoryBuffer(
@@ -121,10 +98,10 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
     last_actions = np.zeros(6, dtype=np.float32)
     gait_time_accumulator = 0.0
 
-    # time related variables
+    #  time related variables
     start_time = time.time()
     real_start_time = time.time()
-    warmup_delay = 0.10
+    warmup_delay = 0.10  # Wait few seconds before turning on Policy
 
     # initial joint positions
     initial_joint_pos = np.array(
@@ -154,7 +131,7 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
             data.qpos[addr] = initial_joint_pos[i]
         data.qpos[2] = Sim2simCfg.robot_config.initial_height
 
-        # forward pass and initial buffer fill
+        # forward pass and inital buffer fill
         mujoco.mj_forward(model, data)
         fall_status = False
         init_obs_list, fall_status = get_observation(
@@ -169,19 +146,14 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
         for _ in range(Sim2simCfg.robot_config.obs_history_len):
             history_buffer.update_history(init_obs_list)
 
-        # warm up ORT session (first call allocates GPU mem / builds TRT engine)
-        dummy_obs = history_buffer.get_stacked_obs()
-        dummy_input = np.expand_dims(dummy_obs, axis=0).astype(np.float32)
-        _ = session.run([output_name], {input_name: dummy_input})
-        print("ONNX session warmed up.")
-
         # camera settings
         viewer.cam.lookat[:] = [0.0, 0.0, 1.0]
-        viewer.cam.distance = 10.0
-        viewer.cam.azimuth = 135
-        viewer.cam.elevation = -20
+        viewer.cam.distance = 10.0  # Zoom out
+        viewer.cam.azimuth = 135  # Rotate camera (0 = Behind, 90 = Right Side).
+        viewer.cam.elevation = -20  # Look slightly down
 
         while viewer.is_running():
+            # Check if we are still in Warmup
             is_warmup = (time.time() - start_time) < warmup_delay
 
             # decimation loop
@@ -210,10 +182,10 @@ def run_mujoco(rl_model_path, robot_model_path, cmd_vel):
                 if is_warmup:
                     actions = np.zeros(6, dtype=np.float32)
                 else:
-                    # ONNX inference: pure numpy, no torch
-                    obs_input = np.expand_dims(stacked_obs, axis=0).astype(np.float32)
-                    outputs = session.run([output_name], {input_name: obs_input})
-                    actions = outputs[0].flatten().astype(np.float32)
+                    obs_tensor = torch.from_numpy(stacked_obs).unsqueeze(0).float()
+                    with torch.no_grad():
+                        actions = policy(obs_tensor)
+                        actions = actions.detach().cpu().numpy().flatten()
 
                 # update last actions
                 actions = np.clip(actions, -100.0, 100.0)
